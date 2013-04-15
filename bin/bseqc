@@ -1,0 +1,227 @@
+#!/usr/bin/env python
+
+'''
+Description:  Quality Control of bisulfite sequencing experiments (BSeQC_V1.0)
+
+Input:  the standard SAM files
+Output: the qc_assess-free SAM files
+Support:
+1. Use M-qc_assess plot to measure the BS-specific biases (eg: overhang end-repaired qc_assess; 5 prime non-conversion qc_assess)
+   and sequence related biases (eg: sequence into adaptor; low-quality nucleotide call).
+2. Trim the biases based on the M-qc_assess plot automatically
+3. Remove the duplicate reads resulting from possible over-amplification
+4. Keep only one copy of the overlapping segment of two read mates in paired-end seq
+
+This code is free software; you can redistribute it and/or modify it
+under the terms of the BSD License (see the file COPYING included with
+the distribution).
+
+@author: Xueqiu Lin
+@contact: xueqiu.lin@gmail.com
+'''
+
+# ------------------------------------
+# python modules
+# ------------------------------------
+from optparse import OptionParser
+import os
+import sys
+import logging
+
+# ------------------------------------
+# own python modules
+# ------------------------------------
+from BSeQC.qc_assess import qc_report as QR
+from BSeQC.qc_filter import qc_filter as QF
+
+# ------------------------------------
+#logging object
+# ------------------------------------
+
+
+
+logging.basicConfig(level=20,
+                    format=' %(levelname)-5s @ %(asctime)s: %(message)s ',
+                    datefmt='%a, %d %b %Y %H:%M:%S',
+                    stream=sys.stderr,
+                    filemode="w"
+                    )
+info=logging.info
+error=logging.error
+warning=logging.warning
+
+
+def prepare_optparser():
+
+    '''
+    Prepare optparser object and validation.
+    New options will be added in this function first.
+    '''
+
+    usage = """usage: %prog <-s sam_file>  [-r ref_file] [-n name][options]
+Example: %prog -s test1.sam,test2.sam -g hg19 -n test -t samtools
+            """
+    description = "%prog -- Quality control of Whole genome bisulfite sequencing mapping result"
+    optparser = OptionParser(version="%prog ",description=description,usage=usage,add_help_option=False)
+    optparser.add_option("-h","--help",action="help",help="Show this help message and exit.")
+
+    optparser.add_option("-s","--sam",metavar="FILE",dest="sam_file",default="",
+                         help="The SAM file for quality analysis; Multiple SAM file should be separated by the ','. (required)")
+    optparser.add_option("-r","--ref",metavar="FILE",dest="ref_file", default="",
+                         help="The reference genome fasta file. (required)")
+    optparser.add_option("-n","--name",type="str",dest="name", default = "NA",
+                         help="The name for the output plot and table (required). Default='NA'")
+    optparser.add_option("-t", "--samtools", dest="samtools", metavar="PATH", default = "",
+                         help="The path of samtools. Default=""")
+    optparser.add_option("-l","--len",type="str",dest="read_length", default = "",
+                         help="If the original mapping reads have been trimmed with adapter or other reasons, the original read length for the sam file should be set."
+                              "Multiple length can also be separated by ','. If the read length of two mates in paired-end is different, please separated by '_' ")
+    optparser.add_option("-p","--pvalue",type="float",dest="pvalue", default=0.01,
+                         help="The pvalue will be set for the trimming cutoff. Default = 0.01")
+    optparser.add_option("--drift",type="int",dest="drift", default=2,
+                         help="How many drifts(%mC) will be set for the trimming cutoff, Default = 2")
+    optparser.add_option("-f","--trim_file",metavar="FILE",dest="trim_file",default = "",
+                         help="User can determine the trimming bp by the qc_filter file. Default=""")
+    optparser.add_option("-a","--auto", dest="automatically", action="store_false",default = True,
+                         help="Automatically qc_filter the biased bp. If not you can use the Mcall biases plot to manually decide how many bp to qc_filter and a trimming file. Default = True.")
+    optparser.add_option("-o","--remove_overlap",dest="remove_overlap",action='store_false',default = True,
+                         help="Keep only one copy of the overlapping segment of two read mates in paired-end seq. Default = True.")
+    optparser.add_option("--filter_dup", dest="filter_dup", action="store_false", default = True,
+                         help="Remove duplicate reads resulting from possible over-amplification. Default = True.")
+    optparser.add_option("--p_poisson",type="float", dest="p_poisson", default= 1e-5,
+                         help="Pvalue cutoff Poisson distribution test in removing duplicate reads. Default = 1e-5"
+                              "It is restricted by --filter_dup.")
+    optparser.add_option("-g","--gsize", type="str", dest="gsize",default = "hs",
+                         help="Effective genome size for calculate max coverage. It can be 1.0e7 or 10000000, "
+                              "or shortcuts: 'hs' for human (2.7e9), 'mm' for mouse (1.87e9), 'ce' for C. elegans (9e7) and 'dm' for fruitfly (1.2e8). Default:hs"
+                              "It is restricted by --filter_dup.")
+    optparser.add_option("--not_mapping", dest="not_mapping",action="store_false", default = True,
+                         help = "Whether keep the not-unique mapping reads in the filter SAM file. Default = True")
+    (options,args) = optparser.parse_args()
+
+    if len(options.sam_file) == 0: 
+        optparser.error("Missing the SAM file, use -s or --sam option.")
+    else:
+        options.sam_file = options.sam_file.split(',')
+    for s in options.sam_file:
+        if not os.path.isfile(s):
+            optparser.error("Can't open the SAM file: " + s )
+            sys.exit(1)
+
+    if len(options.ref_file) == 0:
+        optparser.error("Missing the reference genome fasta file, use -r or --ref option.")
+    else:
+        if not os.path.isfile(options.ref_file):
+            optparser.error("Can't open the ref file: " + options.ref_file)
+
+    if len(options.samtools) != 0:
+        if options.samtools[-1] != '/':
+            options.samtools += '/'
+
+    if len(options.name) == 0:
+        optparser.error("Missing the output file name, use -n or --name options.")
+
+    if len(options.trim_file) != 0 and not os.path.isfile(options.trim_file):
+        optparser.error("Can't open the ref file: " + options.trim_file)
+
+
+    options.read_length = options.read_length.split(',')
+
+    return options
+
+def main():
+    opt = prepare_optparser()
+    sam_inf = opt.sam_file
+    ref_file = opt.ref_file
+    s_path = opt.samtools
+    name = opt.name
+    read_l = opt.read_length
+    auto = opt.automatically
+    pvalue = opt.pvalue
+    drift = opt.drift
+    trim_file = opt.trim_file
+    remove_overlap = opt.remove_overlap
+    filter_dup = opt.filter_dup
+    p_poisson = opt.p_poisson
+    gsize = opt.gsize
+    not_mapping = opt.not_mapping
+
+    info("Get the all parameter!!")
+
+    #check the input mapping files
+    if sam_inf[0][-4:].upper() == '.BAM':
+        sam_format,read_inf =1, os.popen("%ssamtools view -X %s" %(s_path,sam_inf[0]))
+    elif sam_inf[0][-4:].upper() == '.SAM':
+        sam_format, read_inf =1, os.popen("%ssamtools view -XS %s" %(s_path,sam_inf[0]))
+    else:
+        error("The input mapping file is not SAM format or BAM format")
+    pre_flag = read_inf.readline().split('\t')[1]
+    if 'p' in pre_flag:
+        single_on = False
+        info("The input mapping files are paired-end sequencing!")
+    else: 
+        single_on = True
+        info("The input mapping files are single-end sequencing!")
+
+
+    if filter_dup:
+        ## if filter_up is TRUE, the duplicate reads will be assessed and shown in Dup_dis.pdf
+        ## and the loc_dict & max_cov will be used in the trimming step
+        if len(trim_file) != 0:
+            info("The trimming file has been defined. But the filter_dup has been set True.")
+            info("QC_report will just generate Dup distribution!!")
+            info("And the user defined trimming file will be used in the trimming step!!")
+        else:
+            info("The filter_dup has been set True.")
+            info("QC_report not only includes Mbias plot, Mbias table and trimming file, but also Dup distribution.")
+        QC_report_MD= QR.QC_Report_Mbias_Dup(sam_inf, ref_file, s_path, name, read_l, single_on, pvalue, drift, trim_file,
+                                                      p_poisson, gsize)
+        strand_t, loc_dict , max_cov = QC_report_MD.generator()
+
+    else:
+        if len(trim_file) != 0:
+            info("The trimming file has been defined. So Ignore the ")
+        info("The filter_dup has been set False!! QC_report only includes Mbias plot, Mbias table and trimming file.")
+        info("And ignore the collection of the location information for removing duplicate reads!!")
+        QC_report_M = QR.QC_Report_Mias(sam_inf, ref_file, s_path, name, read_l, single_on,pvalue,drift,trim_file)
+        strand_t = QC_report_M.generator()
+        #no duplicate location information
+        loc_dict = {}
+        max_cov = 10000
+
+    if ((auto or filter_dup) and single_on) or ((auto or filter_dup or remove_overlap) and not single_on):
+        ## for single-end: qc_filter Mbias or filter duplicate reads
+        ## for paired-end: qc_filter Mbias, keep one copy of the overlapping segment, or filter duplicate reads
+            info("Start to filter read...")
+            if auto:
+                info("Automatically trim Mbias...")
+            else:
+                info("--auto has been set %s ! Ignore trimming Mbias!!" %auto )
+            if filter_dup:
+                info("Filter duplicate reads...")
+            else:
+                info("--filter_dup has been set %s ! Ignore removing duplicate reads!!" %filter_dup)
+            if remove_overlap and not single_on:
+                info("Keep one copy of the overlapping segment...")
+            if not remove_overlap and not single_on:
+                info("--remove_overlap has been set %s ! Ignore removing one copy of the overlapping segment!!" %remove_overlap)
+            if not_mapping:
+                info("Keep the not_unique mapping reads!")
+            else:
+                info("Remove the not_unique mapping reads!!")
+            QF.filter_sam(sam_inf,strand_t,read_l,single_on,name,s_path,auto,remove_overlap,loc_dict,max_cov,not_mapping)
+            info("Get the filtered SAM file!")
+    else:
+        if single_on:
+            info("Skip the trimming Mbias and removing duplicate reads!!")
+        else:
+            info("Skip the trimming Mbias, removing duplicate reads and removing one copy of the overlapping segment!!")
+
+
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.stderr.write("User interrupt me! ;-) See you!\n")
