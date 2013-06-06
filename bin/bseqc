@@ -59,7 +59,7 @@ def prepare_optparser():
     '''
 
     usage = """usage: %prog <-s sam_file>  [-r ref_file] [-n name][options]
-Example: %prog -s test1.sam,test2.sam -g hg19 -n test -t samtools
+Example: %prog -s test1.sam,test2.sam -g hg19 -n test
             """
     description = "%prog -- Quality control of Whole genome bisulfite sequencing mapping result"
     optparser = OptionParser(version="%prog ",description=description,usage=usage,add_help_option=False)

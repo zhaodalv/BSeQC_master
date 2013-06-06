@@ -16,7 +16,7 @@ class MethReader:
     if the C in one position is CpG, we record the methylation state.
     the process is stratified by strand and read length.
     '''
-    def __init__(self,read,strand_p,ref,original_length):
+    def __init__(self,read,strand_p,ref,original_length,sequence_context):
         '''
         Initialize
         '''
@@ -24,6 +24,7 @@ class MethReader:
         self.strand_p = strand_p
         self.ref = ref
         self.original_length = original_length
+        self.sequence_context = sequence_context
         self.BS_conversion = {'+': ('C','T'), '-': ('G','A')}
         self.reverse_strand = ['-+']
 
@@ -59,6 +60,40 @@ class MethReader:
             self.strand_p[strand][length] = np.zeros((2,int(length)))
         return self.strand_p
 
+    def scan_context(self,seq,refseq,strand,length,match,convert,index):
+        '''
+        scan both the CG and the nonCG  (2013-06-04)
+        '''
+        if self.sequence_context == 'CG':
+            while index >=0:
+                ref_index = index + 1
+                if strand[1]  == '+':                             # '++' or '-+'
+                    context = refseq[ref_index:ref_index+2]
+                else:
+                    context = refseq[ref_index-1:ref_index+1]     # '+-' or '+-'
+                if (context == 'CG' and strand not in self.reverse_strand) or (context == 'GC' and strand in self.reverse_strand):
+                    if seq[index] == convert:
+                        self.strand_p[strand][length][1,index]+=1
+                    elif seq[index] == match:
+                        self.strand_p[strand][length][1,index]+=1
+                        self.strand_p[strand][length][0,index]+=1
+                index = refseq[1:-1].find(match, index+1)
+        else:
+            while index >=0:
+                ref_index = index + 1
+                if strand[1]  == '+':                             # '++' or '-+'
+                    context = refseq[ref_index:ref_index+2]
+                else:
+                    context = refseq[ref_index-1:ref_index+1]     # '+-' or '+-'
+                if (context != 'CG' and strand not in self.reverse_strand) or (context != 'GC' and strand in self.reverse_strand):
+                    if seq[index] == convert:
+                        self.strand_p[strand][length][1,index]+=1
+                    elif seq[index] == match:
+                        self.strand_p[strand][length][1,index]+=1
+                        self.strand_p[strand][length][0,index]+=1
+                index = refseq[1:-1].find(match, index+1)
+        return self.strand_p
+
     def record_meth(self):
         '''
         get the read information to record the methylation state
@@ -83,28 +118,16 @@ class MethReader:
 
         # record the methylation state for each unique (paired) mapping read
         match, convert = self.BS_conversion[strand[0]]
-        index = refseq[1:-1].find(match) # for recognizing the CG site
-        while index >=0:
-            ref_index = index + 1
-            if strand[1]  == '+':                             # '++' or '-+'
-                context = refseq[ref_index:ref_index+2]
-            else:
-                context = refseq[ref_index-1:ref_index+1]     # '+-' or '+-'
-            if (context == 'CG' and strand not in self.reverse_strand) or (context == 'GC' and strand in self.reverse_strand):
-                if seq[index] == convert:
-                    self.strand_p[strand][length][1,index]+=1
-                elif seq[index] == match:
-                    self.strand_p[strand][length][1,index]+=1
-                    self.strand_p[strand][length][0,index]+=1
-            index = refseq[1:-1].find(match, index+1)
+        index = refseq[1:-1].find(match) # for recognizing the CG and the non-CG site
+        self.strand_p = self.scan_context(seq,refseq,strand,length,match,convert,index)
         return self.strand_p
 
 class SingleMethReader(MethReader):
     '''
     specialise in single-end read
     '''
-    def __init__(self,read,strand_p,ref,original_length):
-        MethReader.__init__(self,read,strand_p,ref,original_length)
+    def __init__(self,read,strand_p,ref,original_length,sequence_context):
+        MethReader.__init__(self,read,strand_p,ref,original_length,sequence_context)
 
 
 
@@ -112,8 +135,8 @@ class PairMethReader(MethReader):
     '''
     specialise in paired-end read
     '''
-    def __init__(self,read,strand_p,ref,original_length):
-        MethReader.__init__(self,read,strand_p,ref,original_length)
+    def __init__(self,read,strand_p,ref,original_length,sequence_context):
+        MethReader.__init__(self,read,strand_p,ref,original_length,sequence_context)
         self.reverse_strand = ['-+','+-']
 
     def get_length(self,readlen,strand):

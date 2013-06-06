@@ -6,6 +6,7 @@
 import os
 import sys
 import logging
+import copy
 import numpy as np
 from scipy.stats import norm
 
@@ -121,6 +122,27 @@ class QC_Report:
                         break
         return strand_t
 
+    def decide_final_trimming(self,strand_t_raw):
+        '''
+        decide final trimming from CG Mbias-plot and nonCG Mbias plot (2013-06-04)
+        '''
+        strand_t_final = {}
+        for s in strand_t_raw[0].keys():
+            strand_t_final[s] = {}
+            for l in strand_t_raw[0][s].keys():
+                strand_t_final[s][l] = [0,0]
+                if strand_t_raw[0][s][l][0] >= strand_t_raw[1][s][l][0]:
+                    strand_t_final[s][l][0] = strand_t_raw[0][s][l][0]
+                else:
+                    strand_t_final[s][l][0] = strand_t_raw[1][s][l][0]
+
+                if strand_t_raw[0][s][l][1] <= strand_t_raw[1][s][l][1]:
+                    strand_t_final[s][l][1] = strand_t_raw[0][s][l][1]
+                else:
+                    strand_t_final[s][l][1] = strand_t_raw[1][s][l][1]
+        return strand_t_final
+
+
     def parser_sambam(self,strand_p,ref):
         #Scan each SAM file to calculate the M fractions
         for s in range(len(self.sam_inf)):
@@ -138,14 +160,22 @@ class QC_Report:
             else:
                 original_length = ''
 
+            #add non-CpG Mbias plot (2013-06-04)
+            strand_p_CG = copy.deepcopy(strand_p)
+            strand_p_nonCG = copy.deepcopy(strand_p)
             if self.single_on:
                 for read in read_inf:
-                    rm_single = CI.SingleMethReader(read,strand_p,ref,original_length)
-                    strand_p = rm_single.record_meth()
+                    rm_single_CG = CI.SingleMethReader(read,strand_p_CG,ref,original_length,'CG')
+                    rm_single_nonCG = CI.SingleMethReader(read,strand_p_nonCG,ref,original_length,'nonCG')
+                    strand_p_CG = rm_single_CG.record_meth()
+                    strand_p_nonCG = rm_single_nonCG.record_meth()
             else:
                 for read in read_inf:
-                    rm_pair = CI.PairMethReader(read,strand_p,ref,original_length)
-                    strand_p = rm_pair.record_meth()
+                    rm_pair_CG = CI.PairMethReader(read,strand_p_CG,ref,original_length,'CG')
+                    rm_pair_nonCG = CI.PairMethReader(read,strand_p_nonCG,ref,original_length,'nonCG')
+                    strand_p_CG = rm_pair_CG.record_meth()
+                    strand_p_nonCG = rm_pair_nonCG.record_meth()
+            strand_p = [strand_p_CG, strand_p_nonCG]
         return strand_p
 
     def user_defined_trimming(self):
@@ -185,8 +215,14 @@ class QC_Report:
             strand_p['+-'] = {}
             strand_p['--'] = {}
         strand_p = self.parser_sambam(strand_p,ref)
-        strand_t = self.decide_trim_bp(strand_p)
-        MR.mbias_generator(strand_p,strand_t,self.name)
+        #modify in 2013-06-04
+        strand_t_raw = []
+        name_context = [self.name+'_CG', self.name+'_nonCG']
+        for i in range(len(strand_p)):
+            strand_t_each = self.decide_trim_bp(strand_p[i])
+            strand_t_raw.append(strand_t_each)
+            MR.mbias_generator(strand_p[i],strand_t_each,name_context[i])
+        strand_t = self.decide_final_trimming(strand_t_raw)
         return strand_t
 
 class QC_Report_Mias(QC_Report):
@@ -240,21 +276,29 @@ class QC_Report_Mbias_Dup(QC_Report):
                     for read in read_inf:
                         loc_dict= LI.Loc_paired(read,loc_dict)
             else:
+                #add non-CpG Mbias plot (2013-06-04)
+                strand_p_CG = copy.deepcopy(strand_p)
+                strand_p_nonCG = copy.deepcopy(strand_p)
                 info("Calculate the M fraction for every position and record the location information in %s..." %self.sam_inf[s])
                 if self.single_on:
                     for read in read_inf:
-                        rm_single = CI.SingleMethReader(read,strand_p,ref,original_length)
-                        strand_p = rm_single.record_meth()
+                        rm_single_CG = CI.SingleMethReader(read,strand_p_CG,ref,original_length,'CG')
+                        rm_single_nonCG = CI.SingleMethReader(read,strand_p_nonCG,ref,original_length,'nonCG')
+                        strand_p_CG = rm_single_CG.record_meth()
+                        strand_p_nonCG = rm_single_nonCG.record_meth()
                         loc_dict= LI.Loc_single(read,loc_dict)
                 else:
                     for read in read_inf:
-                        rm_pair = CI.PairMethReader(read,strand_p,ref,original_length)
-                        strand_p = rm_pair.record_meth()
+                        rm_pair_CG = CI.PairMethReader(read,strand_p_CG,ref,original_length,'CG')
+                        rm_pair_nonCG = CI.PairMethReader(read,strand_p_nonCG,ref,original_length,'nonCG')
+                        strand_p_CG = rm_pair_CG.record_meth()
+                        strand_p_nonCG = rm_pair_nonCG.record_meth()
                         loc_dict= LI.Loc_paired(read,loc_dict)
 
         if len(self.trim_file) != 0:
             return loc_dict
         else:
+            strand_p = [strand_p_CG, strand_p_nonCG]
             return strand_p, loc_dict
 
     def get_gsize(self):
@@ -295,9 +339,15 @@ class QC_Report_Mbias_Dup(QC_Report):
             loc_dict= self.parser_sambam(strand_p, ref)
             strand_t = self.user_defined_trimming()
         else:
+            #modify in 2013-06-04
+            strand_t_raw = []
+            name_context = [self.name+'_CG', self.name+'_nonCG']
             strand_p, loc_dict = self.parser_sambam(strand_p,ref)
-            strand_t = self.decide_trim_bp(strand_p)
-            MR.mbias_generator(strand_p,strand_t,self.name)
+            for i in range(len(strand_p)):
+                strand_t_each = self.decide_trim_bp(strand_p[i])
+                strand_t_raw.append(strand_t_each)
+                MR.mbias_generator(strand_p[i],strand_t_each,name_context[i])
+            strand_t = self.decide_final_trimming(strand_t_raw)
         gsize = self.get_gsize()
         max_cov = DR.duplicate_report(loc_dict,gsize,self.p_poisson,self.name)
         return strand_t, loc_dict, max_cov

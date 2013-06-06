@@ -30,10 +30,12 @@ class MappingReader:
         '''
         flag = self.flag_conversion()
         if  '1' in flag:                     #for the paired end
-            if 'R' in flag:
-                strand = '++'
-            else:
+            #if 'R' in flag:
+            #   strand = '++'
+            if 'r' in flag:                  #support Bismark mapping result (2013-06-02)
                 strand = '-+'
+            else:
+                strand = '++'
         elif '2' in flag:                    #for the paired end
             if 'R' in flag:
                 strand = '--'
